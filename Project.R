@@ -84,8 +84,7 @@ confusionMatrix(decisionTreePrediction, testFile1WithClass$class)
 # Generalized linear model
 # glm = train(class ~ .
 #             ,data = trainFile1 %>% dplyr::select(-c(IDs)), 
-#             method = "glm",
-#             #metric = "logLoss", 
+#             method = "glm", 
 #             trControl = control,
 #             preProcess = c("center", "scale")) 
 
@@ -96,7 +95,6 @@ confusionMatrix(decisionTreePrediction, testFile1WithClass$class)
 randomForest = train(class ~ .
                 ,data = trainFile1 %>% dplyr::select(-c(IDs)),
                 method = "rf",
-                #metric = "logLoss",
                 trControl = control,
                 preProcess = c("center", "scale"))
 
