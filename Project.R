@@ -35,6 +35,8 @@ for (i in 1:ncol(newFile1)) {
     newFile1[,i][is.na(newFile1[,i])] <- colMedian
   }
 }
+colSums(is.na(newFile1))
+
 
 # Some basic plots to get an idea of any relationships between the first several attributes
 plot1 <- ggplot(newFile1, aes(x = Attr1, y = Attr2, color = class)) + theme_bw() + geom_point()
@@ -48,6 +50,8 @@ plot2Zoom
 
 # From these plots, there does not seem to be an obvious relationship between Attr1 and Attr2 or Attr3 and Attr4.
 
+######## Feature Importance Exploration ########
+
 # Get principal components for the first year of data
 pcaAttributes <- prcomp(newFile1[,1:62], scale. = TRUE)
 summary(pcaAttributes)
@@ -56,114 +60,159 @@ summary(pcaAttributes)
 # the variance in the data, thus we could reduce the dimensionality of the predictor variables from 62 to 15 with only a
 # 10% loss in variance explanation.
 
-# Assign IDs to each row to split for training and testing datasets
-IDs <- 1:nrow(newFile1)
-newFile1 <- cbind(newFile1, IDs)
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 2)
+model <- train(class ~.
+               ,data = newFile1
+               ,method = "lvq"
+               ,trControl = control)
+varImportance <- varImp(model, scale = FALSE)
+print(varImportance)
+plot(varImportance)
 
 # Create a randomly selected training dataset
-numTrainingIDs <- floor(7027*.7)
-trainFile1 <- newFile1[sample(nrow(newFile1), numTrainingIDs),]
-trainFile1$class <- ifelse(trainFile1$class==1, "Yes", "No")
-head(trainFile1)
+trainData1Samples <- newFile1$class %>% createDataPartition(p = 0.7, list = FALSE)
+trainData1 <- newFile1[trainData1Samples,]
 
 # Create the corresponding test dataset
-testFile1IDs <- newFile1[,64][is.na(pmatch(newFile1[,64],trainFile1[,64]))]
-testFile1 <- newFile1[newFile1$IDs %in% testFile1IDs,]
-testFile1$class <- ifelse(testFile1$class==1, "Yes", "No")
-testFile1WithClass <- testFile1
-testFile1$class <- NA
-head(testFile1)
+testData1 <- newFile1[-trainData1Samples,]
 
-######## Decision tree model ########
+length(trainData1$class[trainData1$class == 1])
+length(trainData1$class[trainData1$class == 0])
+
+# Use oversampling to account for the high imbalance
+overBalancedTrainData1 <- sample_n(trainData1[trainData1$class == 1,], 
+                                   size = nrow(trainData1[trainData1$class == 0,]), 
+                                   replace = TRUE)
+balancedTrainData1 <- rbind(overBalancedTrainData1, trainData1[trainData1$class == 0,])
+balancedTrainData1$class <- as.numeric(balancedTrainData1$class)
+testData1$class <- as.numeric(testData1$class)
+balancedTrainData1 <- as.data.frame(balancedTrainData1)
+testData1 <- as.data.frame(testData1)
+
+# balancedTrainData1$class[balancedTrainData1$class == 1] <- 0
+# balancedTrainData1$class[balancedTrainData1$class == 2] <- 1
+# testData1$class[testData1$class == 1] <- 0
+# testData1$class[testData1$class == 2] <- 1
+
+# length(balancedTrainData1$class[balancedTrainData1$class == 1])
+# length(balancedTrainData1$class[balancedTrainData1$class == 0])
+
+######## Preliminary Linear Model For Determining Multicollinearity ########
+
+linearModel <- lm(class ~ ., data = balancedTrainData1)
+linearModelPrediction <- linearModel %>% predict(testData1)
+
+alias(lm(class ~ ., data = balancedTrainData1))
+
+linearModel <- lm(class ~ . -Attr14 -Attr18, data = balancedTrainData1)
+linearModelPrediction <- linearModel %>% predict(testData1)
+
+data.frame(
+  RMSE = RMSE(linearModelPrediction, testData1$class),
+  R2 = R2(linearModelPrediction, testData1$class)
+)
+
+car::vif(linearModel)
+
+linearModel <- lm(class ~ Attr5 + Attr15 + Attr27 + Attr28 + Attr29 + Attr41 + Attr55 + Attr57 + Attr59, 
+                  data = balancedTrainData1)
+linearModelPrediction <- linearModel %>% predict(testData1)
+
+data.frame(
+  RMSE = RMSE(linearModelPrediction, testData1$class),
+  R2 = R2(linearModelPrediction, testData1$class)
+)
+
+balancedTrainData1$class[balancedTrainData1$class == 1] <- 0
+balancedTrainData1$class[balancedTrainData1$class == 2] <- 1
+testData1$class[testData1$class == 1] <- 0
+testData1$class[testData1$class == 2] <- 1
+
+balancedTrainData1$class <- as.factor(balancedTrainData1$class)
+testData1$class <- as.factor(testData1$class)
 
 # Set the training control parameters to be used for each model
 control = trainControl(method = "repeatedcv" 
-                       ,number = 3
-                       ,classProbs = TRUE 
-                       ,verboseIter = TRUE)
+                       ,number = 5
+                       ,repeats = 2)
 
-decisionTree = train(class ~ .
-                     ,data = trainFile1 %>% select(-c(IDs)) 
-                     ,method = "ctree"
-                     ,trControl = control
-                     ,tuneLength = 10) 
-decisionTree
+######## Linear Discriminant Analysis ########
 
-# Print the confusion matrix and its corresponding statistics
-decisionTreePrediction <- predict(decisionTree, newdata = testFile1WithClass)
-testFile1WithClass$class <- as.factor(testFile1WithClass$class)
-confusionMatrix(decisionTreePrediction, testFile1WithClass$class)
-
-# With a specificity value of 0, the model did not correctly predict a single instance of class = 1.
-
-######## Recursive Partitioning and Regression Trees decision tree model ########
-
-# Train the decision tree
-decisionTreeRPart = train(class ~ .
-                          ,data = trainFile1 %>% select(-c(IDs)) 
-                          ,method = "rpart"
-                          ,trControl = control
-                          ,tuneLength = 10) 
-decisionTreeRPart
+# Train the model
+fit.lda = train(class ~ Attr5 + Attr15 + Attr27 + Attr28 + Attr29 + Attr41 + Attr55 + Attr57 + Attr59 
+                  ,data = balancedTrainData1
+                  ,method = "lda"
+                  ,metric = "Accuracy"
+                  ,trControl = control)
 
 # Print the confusion matrix and its corresponding statistics
-decisionTreeRPartPrediction <- predict(decisionTreeRPart, newdata = testFile1WithClass)
-confusionMatrix(decisionTreeRPartPrediction, testFile1WithClass$class)
+fit.ldaPrediction <- predict(fit.lda, newdata = testData1)
+confusionMatrix(fit.ldaPrediction, testData1$class)
+F_meas(fit.ldaPrediction, reference = testData1$class)
+
+######## Generalized Linear Model ########
+
+# Train the model
+fit.glm = train(class ~ Attr5 + Attr15 + Attr27 + Attr28 + Attr29 + Attr41 + Attr55 + Attr57 + Attr59 
+                ,data = balancedTrainData1
+                ,method = "glm"
+                ,metric = "Accuracy"
+                ,trControl = control)
+
+# Print the confusion matrix and its corresponding statistics
+fit.glmPrediction <- predict(fit.glm, newdata = testData1)
+confusionMatrix(fit.glmPrediction, testData1$class)
+F_meas(fit.glmPrediction, reference = testData1$class)
+
+# Training the generalized linear model results in errors saying "fitted probabilities numerically 0 or 1 
+# occurred," but a working model is still produced.
+
+######## Recursive Partitioning and Regression Trees ########
+
+# Train the model
+fit.rpart = train(class ~ Attr5 + Attr15 + Attr27 + Attr28 + Attr29 + Attr41 + Attr55 + Attr57 + Attr59 
+                  ,data = balancedTrainData1
+                  ,method = "rpart"
+                  ,metric = "Accuracy"
+                  ,trControl = control)
+
+# Print the confusion matrix and its corresponding statistics
+fit.rpartPrediction <- predict(fit.rpart, newdata = testData1)
+confusionMatrix(fit.rpartPrediction, testData1$class)
+F_meas(fit.rpartPrediction, reference = testData1$class)
 
 # Print the decision tree
-prp(decisionTreeRPart$finalModel, box.palette = "Greens", tweak = 1.5)
+prp(fit.rpart$finalModel, box.palette = "Greens", tweak = 1.5)
 
-# The accuracy value of 0.972 seems promising at face value, but the specificity value of 0.4409 implies that the model is
-# correct less than half of the time when predicting the value of class when class = 1.
+######## Random Forest ########
 
-# Generalized linear model
-# glm = train(class ~ .
-#             ,data = trainFile1 %>% select(-c(IDs)) 
-#             ,method = "glm" 
-#             ,trControl = control
-#             ,preProcess = c("center", "scale")) 
+# Train the model
+fit.rf = train(class ~ Attr5 + Attr15 + Attr27 + Attr28 + Attr29 + Attr41 + Attr55 + Attr57 + Attr59
+                     ,data = balancedTrainData1
+                     ,method = "rf"
+                     ,metric = "Accuracy"
+                     ,trControl = control)
 
-# Attempting to create a generalized linear model results in error saying "fitted probabilities numerically 0 or 1 
-# occurred."
-
-# Random forest model
-randomForest = train(class ~ .
-                ,data = trainFile1 %>% select(-c(IDs))
-                ,method = "rf"
-                ,trControl = control)
-randomForest
 
 # Print the confusion matrix and its corresponding statistics
-randomForestPrediction <- predict(randomForest, newdata = testFile1WithClass)
-confusionMatrix(randomForestPrediction, testFile1WithClass$class)
+fit.rfPrediction <- predict(fit.rf, newdata = testData1)
+confusionMatrix(fit.rfPrediction, testData1$class)
+F_meas(fit.rfPrediction, reference = testData1$class)
 
-# The random forest model's accuracy value of 0.973 is approximately equal to that of the decision tree model, but its
-# specificity value of 0.4301 is less.
+######## Support Vector Machine ########
 
-# Before using a set seed to choose the training dataset, the decision tree and random forest models were run and the
-# random forest model had a higher accuracy and specificity value. This could be due to to the comparitively small 
-# training dataset of 4918 entries. A more stable model might arise if the yearly data were concatenated.
+# Train the model
+fit.svm = train(class ~ Attr5 + Attr15 + Attr27 + Attr28 + Attr29 + Attr41 + Attr55 + Attr57 + Attr59
+                ,data = balancedTrainData1
+                ,method = "svmRadial"
+                ,metric = "Accuracy"
+                ,trControl = control)
 
-# Support Vector Machine model
-supportVectorMachine = train(class ~ .
-                 ,data = trainFile1 %>% select(-c(IDs))
-                 ,method = "svmRadial"
-                 ,trControl = control)
-supportVectorMachine
+# Print the confusion matrix and its corresponding statistics
+fit.svmPrediction <- predict(fit.svm, newdata = testData1)
+confusionMatrix(fit.svmPrediction, testData1$class)
+F_meas(fit.svmPrediction, reference = testData1$class)
 
-supportVectorMachinePrediction <- predict(supportVectorMachine, newdata = testFile1WithClass)
-confusionMatrix(supportVectorMachinePrediction, testFile1WithClass$class)
+results <- resamples(list(lda=fit.lda, glm=fit.glm, svm=fit.svm, rpart=fit.rpart, rf=fit.rf))
+summary(results)
 
-# With a specificity value of 0.0215, the model very rarely correctly predicts when class = 1.
-
-# K-nearest neighbor model
-KNN = train(class ~ .
-            ,data = trainFile1 %>% select(-c(IDs))
-            ,method = "kknn"
-            ,trControl = control)
-KNN
-
-KNNPrediction <- predict(KNN, newdata = testFile1WithClass)
-confusionMatrix(KNNPrediction, testFile1WithClass$class)
-
-# With a specificity value of 0.0108, the model very rarely correctly predicts when class = 1.
